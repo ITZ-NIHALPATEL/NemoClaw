@@ -1,0 +1,17 @@
+name: Add to project
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  add-to-project:
+    name: Add to NemoClaw Development Tracker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/orgs/NVIDIA/projects/199
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
