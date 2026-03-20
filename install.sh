@@ -6,12 +6,124 @@
 
 set -euo pipefail
 
+NEMOCLAW_VERSION="0.1.0"
+TOTAL_STEPS=3
+
+# ---------------------------------------------------------------------------
+# Color / style — disabled when NO_COLOR is set or stdout is not a TTY.
+# Uses exact NVIDIA green #76B900 on truecolor terminals; 256-color otherwise.
+# ---------------------------------------------------------------------------
+if [[ -z "${NO_COLOR:-}" && -t 1 ]]; then
+  if [[ "${COLORTERM:-}" == "truecolor" || "${COLORTERM:-}" == "24bit" ]]; then
+    C_GREEN=$'\033[38;2;118;185;0m'   # #76B900 — exact NVIDIA green
+  else
+    C_GREEN=$'\033[38;5;148m'          # closest 256-color on dark backgrounds
+  fi
+  C_BOLD=$'\033[1m'
+  C_DIM=$'\033[2m'
+  C_RED=$'\033[1;31m'
+  C_YELLOW=$'\033[1;33m'
+  C_CYAN=$'\033[1;36m'
+  C_WHITE=$'\033[1;37m'
+  C_RESET=$'\033[0m'
+else
+  C_GREEN='' C_BOLD='' C_DIM='' C_RED='' C_YELLOW='' C_CYAN='' C_WHITE='' C_RESET=''
+fi
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-info()  { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
-warn()  { printf '\033[1;33m[WARN]\033[0m  %s\n' "$*"; }
-error() { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*"; exit 1; }
+info()  { printf "${C_CYAN}[INFO]${C_RESET}  %s\n" "$*"; }
+warn()  { printf "${C_YELLOW}[WARN]${C_RESET}  %s\n" "$*"; }
+error() { printf "${C_RED}[ERROR]${C_RESET} %s\n" "$*" >&2; exit 1; }
+ok()    { printf "  ${C_GREEN}✓${C_RESET}  %s\n" "$*"; }
+
+# step N "Description" — numbered section header
+step() {
+  local n=$1 msg=$2
+  printf "\n${C_GREEN}[%s/%s]${C_RESET} ${C_BOLD}%s${C_RESET}\n" \
+    "$n" "$TOTAL_STEPS" "$msg"
+  printf "  ${C_DIM}──────────────────────────────────────────────────${C_RESET}\n"
+}
+
+print_banner() {
+  printf "\n"
+  # ANSI Shadow ASCII art — hand-crafted, no figlet dependency
+  printf "  ${C_GREEN}${C_BOLD} ███╗   ██╗███████╗███╗   ███╗ ██████╗  ██████╗██╗      █████╗ ██╗    ██╗${C_RESET}\n"
+  printf "  ${C_GREEN}${C_BOLD} ████╗  ██║██╔════╝████╗ ████║██╔═══██╗██╔════╝██║     ██╔══██╗██║    ██║${C_RESET}\n"
+  printf "  ${C_GREEN}${C_BOLD} ██╔██╗ ██║█████╗  ██╔████╔██║██║   ██║██║     ██║     ███████║██║ █╗ ██║${C_RESET}\n"
+  printf "  ${C_GREEN}${C_BOLD} ██║╚██╗██║██╔══╝  ██║╚██╔╝██║██║   ██║██║     ██║     ██╔══██║██║███╗██║${C_RESET}\n"
+  printf "  ${C_GREEN}${C_BOLD} ██║ ╚████║███████╗██║ ╚═╝ ██║╚██████╔╝╚██████╗███████╗██║  ██║╚███╔███╔╝${C_RESET}\n"
+  printf "  ${C_GREEN}${C_BOLD} ╚═╝  ╚═══╝╚══════╝╚═╝     ╚═╝ ╚═════╝  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝${C_RESET}\n"
+  printf "\n"
+  printf "  ${C_DIM}Deploy more secure, always-on AI assistants with a single command.  v%s${C_RESET}\n" "$NEMOCLAW_VERSION"
+  printf "\n"
+}
+
+print_done() {
+  local elapsed=$(( SECONDS - _INSTALL_START ))
+  info "=== Installation complete ==="
+  printf "\n"
+  printf "  ${C_GREEN}${C_BOLD}NemoClaw${C_RESET}  ${C_DIM}(%ss)${C_RESET}\n" "$elapsed"
+  printf "\n"
+  printf "  Your secured AI agent stack is live.\n"
+  printf "  ${C_DIM}Sandbox in, break things, and tell us what you find.${C_RESET}\n"
+  printf "\n"
+  printf "  ${C_BOLD}GitHub${C_RESET}  ${C_DIM}https://github.com/nvidia/nemoclaw${C_RESET}\n"
+  printf "  ${C_BOLD}Docs${C_RESET}    ${C_DIM}https://docs.nvidia.com/nemoclaw/latest/${C_RESET}\n"
+  printf "\n"
+}
+
+usage() {
+  printf "\n"
+  printf "  ${C_BOLD}NemoClaw Installer${C_RESET}  ${C_DIM}v%s${C_RESET}\n\n" "$NEMOCLAW_VERSION"
+  printf "  ${C_DIM}Usage:${C_RESET}\n"
+  printf "    curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash\n"
+  printf "    curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash -s -- [options]\n\n"
+  printf "  ${C_DIM}Options:${C_RESET}\n"
+  printf "    --non-interactive    Skip prompts (uses env vars / defaults)\n"
+  printf "    --version            Print installer version and exit\n"
+  printf "    --help               Show this help message and exit\n\n"
+  printf "  ${C_DIM}Environment:${C_RESET}\n"
+  printf "    NVIDIA_API_KEY                API key (skips credential prompt)\n"
+  printf "    NEMOCLAW_NON_INTERACTIVE=1    Same as --non-interactive\n"
+  printf "\n"
+}
+
+# spin "label" cmd [args...]
+#   Runs a command in the background, showing a braille spinner until it exits.
+#   Stdout/stderr are captured; dumped only on failure.
+#   Falls back to plain output when stdout is not a TTY (CI / piped installs).
+spin() {
+  local msg="$1"; shift
+
+  if [[ ! -t 1 ]]; then
+    info "$msg"
+    "$@"
+    return
+  fi
+
+  local log; log=$(mktemp)
+  "$@" >"$log" 2>&1 &
+  local pid=$! i=0
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r  ${C_GREEN}%s${C_RESET}  %s" "${frames[$((i++ % 10))]}" "$msg"
+    sleep 0.08
+  done
+
+  wait "$pid"; local status=$?
+  if [[ $status -eq 0 ]]; then
+    printf "\r  ${C_GREEN}✓${C_RESET}  %s\n" "$msg"
+  else
+    printf "\r  ${C_RED}✗${C_RESET}  %s\n\n" "$msg"
+    cat "$log" >&2
+    printf "\n"
+  fi
+  rm -f "$log"
+  return $status
+}
 
 command_exists() { command -v "$1" &>/dev/null; }
 
@@ -136,10 +248,10 @@ install_nodejs() {
     error "nvm installer integrity check failed\n  Expected: $NVM_SHA256\n  Actual:   $actual_hash"
   fi
   info "nvm installer integrity verified"
-  bash "$nvm_tmp"
+  spin "Installing nvm..." bash "$nvm_tmp"
   rm -f "$nvm_tmp"
   ensure_nvm_loaded
-  nvm install 22
+  spin "Installing Node.js 22..." bash -c ". \"$NVM_DIR/nvm.sh\" && nvm install 22 --no-progress"
   info "Node.js installed: $(node --version)"
 }
 
@@ -222,11 +334,13 @@ install_or_upgrade_ollama() {
 install_nemoclaw() {
   if [[ -f "./package.json" ]] && grep -q '"name": "nemoclaw"' ./package.json 2>/dev/null; then
     info "NemoClaw package.json found in current directory — installing from source…"
-    npm install && npm link
+    spin "Installing dependencies..." npm install --loglevel=error
+    spin "Linking nemoclaw CLI..." npm link --loglevel=error
   else
     info "Installing NemoClaw from GitHub…"
     # Revert once https://github.com/NVIDIA/NemoClaw/issues/71 is complete and the package is published
-    npm install -g git+https://github.com/NVIDIA/NemoClaw.git
+    spin "Installing NemoClaw..." \
+      npm install -g git+https://github.com/NVIDIA/NemoClaw.git
   fi
 
   refresh_path
@@ -331,23 +445,31 @@ main() {
   for arg in "$@"; do
     case "$arg" in
       --non-interactive) NON_INTERACTIVE=1 ;;
+      --version) printf "nemoclaw-installer v%s\n" "$NEMOCLAW_VERSION"; exit 0 ;;
+      --help|-h) usage; exit 0 ;;
     esac
   done
   # Also honor env var
   NON_INTERACTIVE="${NON_INTERACTIVE:-${NEMOCLAW_NON_INTERACTIVE:-}}"
   export NEMOCLAW_NON_INTERACTIVE="${NON_INTERACTIVE}"
 
-  info "=== NemoClaw Installer ==="
+  _INSTALL_START=$SECONDS
+  print_banner
 
+  step 1 "Node.js"
   install_nodejs
   ensure_supported_runtime
+
+  step 2 "NemoClaw CLI"
   # install_or_upgrade_ollama
   install_nemoclaw
   verify_nemoclaw
   post_install_message
+
+  step 3 "Onboarding"
   run_onboard
 
-  info "=== Installation complete ==="
+  print_done
 }
 
 main "$@"

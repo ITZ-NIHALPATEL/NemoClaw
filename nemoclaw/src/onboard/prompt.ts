@@ -4,6 +4,15 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
+// Color helpers — disabled when NO_COLOR is set or stdout is not a TTY.
+// Uses exact NVIDIA green #76B900 on truecolor terminals; 256-color otherwise.
+const _c  = !process.env.NO_COLOR && process.stdout.isTTY;
+const _tc = _c && (process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit");
+const _G  = _c ? (_tc ? "\x1b[38;2;118;185;0m" : "\x1b[38;5;148m") : "";  // NVIDIA green #76B900
+const _B  = _c ? "\x1b[1m"        : "";  // bold
+const _D  = _c ? "\x1b[2m"        : "";  // dim
+const _R  = _c ? "\x1b[0m"        : "";  // reset
+
 export interface SelectOption {
   label: string;
   value: string;
@@ -44,10 +53,12 @@ export async function promptSelect(
   try {
     console.log(`\n${question}\n`);
     for (let i = 0; i < options.length; i++) {
-      const marker = i === defaultIndex ? "*" : " ";
+      const isDefault = i === defaultIndex;
+      const marker = isDefault ? `${_G}▶${_R}` : " ";
+      const label  = isDefault ? `${_B}${options[i].label}${_R}` : options[i].label;
       const optHint = options[i].hint;
-      const hint = optHint ? `  ${optHint}` : "";
-      console.log(`  ${marker} ${String(i + 1)}. ${options[i].label}${hint}`);
+      const hint = optHint ? `  ${_D}${optHint}${_R}` : "";
+      console.log(`  ${marker} ${String(i + 1)}. ${label}${hint}`);
     }
     console.log("");
 

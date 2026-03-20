@@ -17,6 +17,40 @@ function writeExecutable(target, contents) {
   fs.writeFileSync(target, contents, { mode: 0o755 });
 }
 
+// ---------------------------------------------------------------------------
+// Helpers shared across suites
+// ---------------------------------------------------------------------------
+
+/** Fake node that reports v22.14.0. */
+function writeNodeStub(fakeBin) {
+  writeExecutable(
+    path.join(fakeBin, "node"),
+    `#!/usr/bin/env bash
+if [ "$1" = "--version" ] || [ "$1" = "-v" ]; then echo "v22.14.0"; exit 0; fi
+exit 99`,
+  );
+}
+
+/**
+ * Minimal npm stub. Handles --version, config-get-prefix, and a custom
+ * install handler injected as a shell snippet via NPM_INSTALL_HANDLER.
+ */
+function writeNpmStub(fakeBin, installSnippet = "exit 0") {
+  writeExecutable(
+    path.join(fakeBin, "npm"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "--version" ]; then echo "10.9.2"; exit 0; fi
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "prefix" ]; then echo "$NPM_PREFIX"; exit 0; fi
+if [ "$1" = "install" ] || [ "$1" = "link" ] || [ "$1" = "uninstall" ]; then
+  ${installSnippet}
+fi
+echo "unexpected npm invocation: $*" >&2; exit 98`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+
 describe("installer runtime preflight", () => {
   it("fails fast with a clear message on unsupported Node.js and npm", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-install-preflight-"));
@@ -358,6 +392,110 @@ exit 0
     assert.equal(result.status, 0);
     assert.match(output, /Installation complete!/);
     assert.match(output, /nemoclaw v0\.1\.0-test is ready/);
+  });
+
+  it("--help exits 0 and shows install usage", () => {
+    const result = spawnSync("bash", [INSTALLER, "--help"], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+    });
+
+    assert.equal(result.status, 0);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /NemoClaw Installer/);
+    assert.match(output, /--non-interactive/);
+    assert.match(output, /--version/);
+    assert.match(output, /nvidia\.com\/nemoclaw\.sh/);
+  });
+
+  it("--version exits 0 and prints the version number", () => {
+    const result = spawnSync("bash", [INSTALLER, "--version"], {
+      cwd: path.join(__dirname, ".."),
+      encoding: "utf-8",
+    });
+
+    assert.equal(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /nemoclaw-installer v\d+\.\d+\.\d+/);
+  });
+
+  it("uses npm install + npm link for a source checkout (no -g)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-install-source-"));
+    const fakeBin = path.join(tmp, "bin");
+    const prefix = path.join(tmp, "prefix");
+    const npmLog = path.join(tmp, "npm.log");
+    fs.mkdirSync(fakeBin);
+    fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
+
+    writeNodeStub(fakeBin);
+    writeNpmStub(
+      fakeBin,
+      `printf '%s\\n' "$*" >> "$NPM_LOG_PATH"
+if [ "$1" = "install" ]; then exit 0; fi
+if [ "$1" = "link" ]; then
+  cat > "$NPM_PREFIX/bin/nemoclaw" <<'EOS'
+#!/usr/bin/env bash
+if [ "$1" = "onboard" ] || [ "$1" = "--version" ]; then exit 0; fi
+exit 0
+EOS
+  chmod +x "$NPM_PREFIX/bin/nemoclaw"
+  exit 0
+fi`,
+    );
+
+    // Write a package.json that triggers the source-checkout path.
+    // Must use spaces after colons to match the grep in install.sh.
+    fs.writeFileSync(
+      path.join(tmp, "package.json"),
+      JSON.stringify({ name: "nemoclaw", version: "0.1.0" }, null, 2),
+    );
+
+    const result = spawnSync("bash", [INSTALLER], {
+      cwd: tmp,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmp,
+        PATH: `${fakeBin}:${TEST_SYSTEM_PATH}`,
+        NEMOCLAW_NON_INTERACTIVE: "1",
+        NPM_PREFIX: prefix,
+        NPM_LOG_PATH: npmLog,
+      },
+    });
+
+    assert.equal(result.status, 0);
+    const log = fs.readFileSync(npmLog, "utf-8");
+    // install (no -g) and link must both have been called
+    assert.match(log, /^install(?!\s+-g)/m);
+    assert.match(log, /^link/m);
+    // the GitHub URL must NOT appear — this is a local install
+    assert.doesNotMatch(log, new RegExp(GITHUB_INSTALL_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("spin() non-TTY: dumps wrapped-command output and exits non-zero on failure", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-install-spin-fail-"));
+    const fakeBin = path.join(tmp, "bin");
+    const prefix = path.join(tmp, "prefix");
+    fs.mkdirSync(fakeBin);
+    fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
+
+    writeNodeStub(fakeBin);
+    // npm install -g fails with a recognisable message
+    writeNpmStub(fakeBin, `echo "ENOTFOUND simulated network error" >&2; exit 1`);
+
+    const result = spawnSync("bash", [INSTALLER], {
+      cwd: tmp,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: tmp,
+        PATH: `${fakeBin}:${TEST_SYSTEM_PATH}`,
+        NEMOCLAW_NON_INTERACTIVE: "1",
+        NPM_PREFIX: prefix,
+      },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /ENOTFOUND simulated network error/);
   });
 
   it("creates a user-local shim when npm installs outside the current PATH", () => {

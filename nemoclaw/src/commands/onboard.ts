@@ -151,6 +151,36 @@ function getDefaultOllamaModel(): string {
   return models.includes(DEFAULT_OLLAMA_MODEL) ? DEFAULT_OLLAMA_MODEL : models[0];
 }
 
+// Spinner — only activates on interactive TTYs; transparent in CI / piped output.
+// Uses exact NVIDIA green #76B900 on truecolor terminals.
+const _spinGreen =
+  process.stdout.isTTY &&
+  (process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit")
+    ? "\x1b[38;2;118;185;0m"
+    : "\x1b[38;5;148m";
+
+function withSpinner<T>(msg: string, task: Promise<T>): Promise<T> {
+  if (!process.stdout.isTTY) return task;
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let i = 0;
+  process.stdout.write(`  ${msg} ${frames[0]}`);
+  const timer = setInterval(() => {
+    process.stdout.write(`\r  ${msg} ${frames[i++ % frames.length]}`);
+  }, 80);
+  return task.then(
+    (result) => {
+      clearInterval(timer);
+      process.stdout.write(`\r  ${msg} ${_spinGreen}✓\x1b[0m\n`);
+      return result;
+    },
+    (err: unknown) => {
+      clearInterval(timer);
+      process.stdout.write(`\r  ${msg} \x1b[1;31m✗\x1b[0m\n`);
+      throw err;
+    },
+  );
+}
+
 function testCommand(command: string): boolean {
   try {
     execSync(command, { encoding: "utf-8", stdio: "ignore", shell: "/bin/bash" });
@@ -343,8 +373,8 @@ export async function cliOnboard(opts: OnboardOptions): Promise<void> {
   const isLocalEndpoint =
     endpointType === "vllm" || endpointType === "ollama" || endpointType === "nim-local";
   logger.info("");
-  logger.info(`Validating ${requiresApiKey ? "credential" : "endpoint"} against ${endpointUrl}...`);
-  const validation = await validateApiKey(apiKey, endpointUrl);
+  const validationMsg = `Validating ${requiresApiKey ? "credential" : "endpoint"} against ${endpointUrl}...`;
+  const validation = await withSpinner(validationMsg, validateApiKey(apiKey, endpointUrl));
 
   if (!validation.valid) {
     if (isLocalEndpoint) {
@@ -425,7 +455,7 @@ export async function cliOnboard(opts: OnboardOptions): Promise<void> {
   );
   logger.info(`  Credential:  $${credentialEnv}`);
   logger.info(`  Profile:     ${profile}`);
-  logger.info(`  Provider:    ${providerName}`);
+  logger.info(`  Provider ID: ${providerName}`);
   logger.info("");
 
   if (!nonInteractive) {
