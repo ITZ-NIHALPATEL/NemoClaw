@@ -22,48 +22,8 @@ describe("onboard helpers", () => {
     assert.match(script, /"model": "nemotron-3-nano:30b"/);
     assert.match(script, /"credentialEnv": "OPENAI_API_KEY"/);
     assert.match(script, /openclaw models set 'inference\/nemotron-3-nano:30b'/);
-    assert.match(script, /cfg\.setdefault\('agents', \{\}\)\.setdefault\('defaults', \{\}\)\.setdefault\('model', \{\}\)\['primary'\]/);
-    assert.match(script, /providers_cfg\["inference"\]/);
-    assert.match(script, /json\.loads\("\{\\\"baseUrl\\\":\\\"https:\/\/inference\.local\/v1\\\",\\\"apiKey\\\":\\\"unused\\\"/);
     assert.match(script, /inference\/nemotron-3-nano:30b/);
     assert.match(script, /^exit$/m);
-  });
-
-  it("sets reasoning to false by default for all models", () => {
-    const script = buildSandboxConfigSyncScript({
-      endpointType: "custom",
-      endpointUrl: "https://inference.local/v1",
-      model: "nemotron-3-nano:30b",
-      profile: "inference-local",
-    });
-
-    // Reasoning should be off — the provider config embedded in the script
-    // should contain "reasoning": false regardless of model name
-    assert.match(script, /\\\"reasoning\\\":false/);
-    assert.match(script, /\\\"maxTokens\\\":4096/);
-  });
-
-  it("sets reasoning to false for cloud models too", () => {
-    const script = buildSandboxConfigSyncScript({
-      endpointType: "custom",
-      endpointUrl: "https://inference.local/v1",
-      model: "nvidia/nemotron-3-super-120b-a12b",
-      profile: "inference-local",
-    });
-
-    assert.match(script, /\\\"reasoning\\\":false/);
-    assert.match(script, /\\\"maxTokens\\\":4096/);
-  });
-
-  it("sets reasoning to false for non-nemotron models", () => {
-    const script = buildSandboxConfigSyncScript({
-      endpointType: "custom",
-      endpointUrl: "https://inference.local/v1",
-      model: "qwen/qwen3-1.7b",
-      profile: "inference-local",
-    });
-
-    assert.match(script, /\\\"reasoning\\\":false/);
   });
 
   it("routes ollama-local models through the inference provider", () => {
@@ -75,8 +35,6 @@ describe("onboard helpers", () => {
       provider: "ollama-local",
     });
 
-    // Should use "inference" as the provider key (not "ollama-local")
-    assert.match(script, /providers_cfg\["inference"\]/);
     // Primary model should be prefixed with inference/
     assert.match(script, /inference\/nemotron-3-nano:30b/);
   });
@@ -90,7 +48,7 @@ describe("onboard helpers", () => {
     });
 
     assert.match(script, /^set -euo pipefail$/m);
-    assert.match(script, /^mkdir -p ~\/\.nemoclaw ~\/\.openclaw$/m);
+    assert.match(script, /^mkdir -p ~\/\.nemoclaw$/m);
     assert.match(script, /^exit$/m);
   });
 });

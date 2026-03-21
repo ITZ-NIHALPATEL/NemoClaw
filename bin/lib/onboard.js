@@ -92,10 +92,6 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function pythonLiteralJson(value) {
-  return JSON.stringify(JSON.stringify(value));
-}
-
 function buildSandboxConfigSyncScript(selectionConfig) {
   const providerType = selectionConfig.provider || (
     selectionConfig.profile === "inference-local"
@@ -105,52 +101,15 @@ function buildSandboxConfigSyncScript(selectionConfig) {
       : "nvidia-nim"
   );
   const primaryModel = getOpenClawPrimaryModel(providerType, selectionConfig.model);
-  const providerKey = "inference";
-  // Reasoning defaults to off for fast responses. Users can enable it
-  // post-setup via: nemoclaw config set reasoning on (future feature).
-  const providerConfig = {
-    baseUrl: selectionConfig.endpointUrl,
-    apiKey: "unused",
-    api: "openai-completions",
-    models: [
-      {
-        id: selectionConfig.model,
-        name: selectionConfig.model,
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 131072,
-        maxTokens: 4096,
-      },
-    ],
-  };
+  // openclaw.json is locked (root:444) at runtime — the model config is baked
+  // into the Dockerfile via NEMOCLAW_MODEL build arg. We only write our own
+  // nemoclaw config here.
   return `
 set -euo pipefail
-mkdir -p ~/.nemoclaw ~/.openclaw
+mkdir -p ~/.nemoclaw
 cat > ~/.nemoclaw/config.json <<'EOF_NEMOCLAW_CFG'
 ${JSON.stringify(selectionConfig, null, 2)}
 EOF_NEMOCLAW_CFG
-python3 - <<'PYCFG'
-import json
-import os
-
-cfg_path = os.path.expanduser('~/.openclaw/openclaw.json')
-cfg = {}
-if os.path.exists(cfg_path):
-    with open(cfg_path) as f:
-        cfg = json.load(f)
-
-cfg.setdefault('agents', {}).setdefault('defaults', {}).setdefault('model', {})['primary'] = ${JSON.stringify(primaryModel)}
-models_cfg = cfg.setdefault('models', {})
-models_cfg.setdefault('mode', 'merge')
-providers_cfg = models_cfg.setdefault('providers', {})
-providers_cfg[${JSON.stringify(providerKey)}] = json.loads(${pythonLiteralJson(providerConfig)})
-
-with open(cfg_path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-
-os.chmod(cfg_path, 0o600)
-PYCFG
 openclaw models set ${shellQuote(primaryModel)} > /dev/null 2>&1 || true
 exit
 `.trim();
@@ -461,7 +420,7 @@ async function startGateway(gpu) {
 
 // ── Step 3: Sandbox ──────────────────────────────────────────────
 
-async function createSandbox(gpu) {
+async function createSandbox(gpu, model) {
   step(3, 7, "Creating sandbox");
 
   const nameAnswer = await promptOrDefault(
@@ -505,7 +464,14 @@ async function createSandbox(gpu) {
   const { mkdtempSync } = require("fs");
   const os = require("os");
   const buildCtx = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-build-"));
-  fs.copyFileSync(path.join(ROOT, "Dockerfile"), path.join(buildCtx, "Dockerfile"));
+  let dockerfile = fs.readFileSync(path.join(ROOT, "Dockerfile"), "utf-8");
+  if (model) {
+    dockerfile = dockerfile.replace(
+      /^ARG NEMOCLAW_MODEL=.+$/m,
+      `ARG NEMOCLAW_MODEL=${model}`,
+    );
+  }
+  fs.writeFileSync(path.join(buildCtx, "Dockerfile"), dockerfile);
   run(`cp -r "${path.join(ROOT, "nemoclaw")}" "${buildCtx}/nemoclaw"`);
   run(`cp -r "${path.join(ROOT, "nemoclaw-blueprint")}" "${buildCtx}/nemoclaw-blueprint"`);
   run(`cp -r "${path.join(ROOT, "scripts")}" "${buildCtx}/scripts"`);
@@ -911,9 +877,11 @@ async function setupNim(sandboxName, gpu) {
     console.log(`  Using NVIDIA Endpoint API with model: ${model}`);
   }
 
-  registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+  if (sandboxName) {
+    registry.updateSandbox(sandboxName, { model, provider, nimContainer });
+  }
 
-  return { model, provider };
+  return { model, provider, nimContainer };
 }
 
 // ── Step 5: Inference provider ───────────────────────────────────
@@ -1174,8 +1142,9 @@ async function onboard(opts = {}) {
 
   const gpu = await preflight();
   await startGateway(gpu);
-  const sandboxName = await createSandbox(gpu);
-  const { model, provider } = await setupNim(sandboxName, gpu);
+  const { model, provider, nimContainer } = await setupNim(null, gpu);
+  const sandboxName = await createSandbox(gpu, model);
+  registry.updateSandbox(sandboxName, { model, provider, nimContainer });
   await setupInference(sandboxName, model, provider);
   await setupOpenclaw(sandboxName, model, provider);
   await setupPolicies(sandboxName);
