@@ -28,4 +28,69 @@ describe("onboard helpers", () => {
     assert.match(script, /inference\/nemotron-3-nano:30b/);
     assert.match(script, /^exit$/m);
   });
+
+  it("sets reasoning to false by default for all models", () => {
+    const script = buildSandboxConfigSyncScript({
+      endpointType: "custom",
+      endpointUrl: "https://inference.local/v1",
+      model: "nemotron-3-nano:30b",
+      profile: "inference-local",
+    });
+
+    // Reasoning should be off — the provider config embedded in the script
+    // should contain "reasoning": false regardless of model name
+    assert.match(script, /\\\"reasoning\\\":false/);
+    assert.match(script, /\\\"maxTokens\\\":4096/);
+  });
+
+  it("sets reasoning to false for cloud models too", () => {
+    const script = buildSandboxConfigSyncScript({
+      endpointType: "custom",
+      endpointUrl: "https://inference.local/v1",
+      model: "nvidia/nemotron-3-super-120b-a12b",
+      profile: "inference-local",
+    });
+
+    assert.match(script, /\\\"reasoning\\\":false/);
+    assert.match(script, /\\\"maxTokens\\\":4096/);
+  });
+
+  it("sets reasoning to false for non-nemotron models", () => {
+    const script = buildSandboxConfigSyncScript({
+      endpointType: "custom",
+      endpointUrl: "https://inference.local/v1",
+      model: "qwen/qwen3-1.7b",
+      profile: "inference-local",
+    });
+
+    assert.match(script, /\\\"reasoning\\\":false/);
+  });
+
+  it("routes ollama-local models through the inference provider", () => {
+    const script = buildSandboxConfigSyncScript({
+      endpointType: "custom",
+      endpointUrl: "https://inference.local/v1",
+      model: "nemotron-3-nano:30b",
+      profile: "inference-local",
+      provider: "ollama-local",
+    });
+
+    // Should use "inference" as the provider key (not "ollama-local")
+    assert.match(script, /providers_cfg\["inference"\]/);
+    // Primary model should be prefixed with inference/
+    assert.match(script, /inference\/nemotron-3-nano:30b/);
+  });
+
+  it("generates a valid shell script with set -euo pipefail", () => {
+    const script = buildSandboxConfigSyncScript({
+      endpointType: "custom",
+      endpointUrl: "https://inference.local/v1",
+      model: "test-model",
+      profile: "inference-local",
+    });
+
+    assert.match(script, /^set -euo pipefail$/m);
+    assert.match(script, /^mkdir -p ~\/\.nemoclaw ~\/\.openclaw$/m);
+    assert.match(script, /^exit$/m);
+  });
 });
